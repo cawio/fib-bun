@@ -3,7 +3,7 @@ import concurrent.futures
 import time
 import random
 
-BASE_URL = "http://localhost:3000"
+BASE_URL = "https://fibbun.notacow.dev"
 NUM_REQUESTS = 100
 
 ENDPOINTS = [
@@ -23,7 +23,7 @@ def stress_test():
 
         start_time = time.time()
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=20)
             elapsed_time = time.time() - start_time
             return f"✔ {url} - {elapsed_time:.2f}s" if response.status_code == 200 else f"✖ {url} - {response.status_code}"
         except requests.exceptions.RequestException as e:
