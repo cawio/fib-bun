@@ -54,7 +54,7 @@ def request_random_endpoint():
             "success": False
         }
 
-def stress_test(batch_size=NUM_REQUESTS, iterations=3, delay=2):
+def stress_test(batch_size=NUM_REQUESTS, iterations=100, delay=1):
     all_times = []
     success_count = 0
     total_count = 0

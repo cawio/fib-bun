@@ -1,4 +1,5 @@
 import { serve } from 'bun';
+import { createClient } from 'redis';
 
 interface FibonacciResponse {
     n: number;
@@ -34,147 +35,291 @@ interface ErrorResponse {
     error: string;
 }
 
-// Enhanced caching for all computationally intensive operations
-const fibCache = new Map<number, number>();
-const primeCache = new Map<number, number>();
-const factorialCache = new Map<number, number>();
+// Fallback caches in case Redis is unavailable
+const fibCache = new Map<number, string>();
+const primeCache = new Map<number, string>();
+const factorialCache = new Map<number, string>();
 const piCache = new Map<number, string>();
 
-// Rate limiting
-const rateLimits = new Map<string, { count: number, timestamp: number }>();
+// Rate limiting using local memory (could be moved to Redis in production)
+const rateLimits = new Map<string, { count: number; timestamp: number }>();
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const RATE_LIMIT_MAX = 200;      // Max 200 requests per minute per IP
+const RATE_LIMIT_MAX = 200; // Max 200 requests per minute per IP
 
-// Improved iterative Fibonacci implementation (much faster than recursive)
-function fibonacci(n: number): number {
-    if (n <= 0) return 0;
-    if (n === 1) return 1;
-    if (fibCache.has(n)) return fibCache.get(n)!;
+// Redis client
+// REPLACE WITH YOUR ACTUAL REDIS CONNECTION DETAILS
+const redisClient = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    socket: {
+        connectTimeout: 5000,
+        reconnectStrategy: (retries) => Math.min(retries * 50, 1000),
+    },
+});
 
-    let a = 0,
-        b = 1;
+// Redis key prefixes for different calculations
+const REDIS_KEYS = {
+    FIBONACCI: 'fib:',
+    PRIME: 'prime:',
+    FACTORIAL: 'fact:',
+    PI: 'pi:',
+    HEALTHCHECK: 'health:',
+};
+
+// Default TTL for Redis cache entries (1 week in seconds)
+const DEFAULT_TTL = 604800;
+
+// Initialize Redis connection
+async function initRedis() {
+    try {
+        await redisClient.connect();
+        console.log('✅ Connected to Redis');
+
+        // Set a health check key
+        await redisClient.set(REDIS_KEYS.HEALTHCHECK + 'startup', Date.now().toString());
+
+        // Precompute and cache some common values
+        precomputeValues();
+    } catch (err) {
+        console.error('❌ Redis connection failed:', err);
+        console.log('⚠️ Running in fallback mode with in-memory caching only');
+    }
+}
+
+// Precompute common values and store in Redis
+async function precomputeValues() {
+    try {
+        // Precompute first 100 Fibonacci numbers
+        for (let i = 0; i <= 100; i += 10) {
+            await cacheValue(REDIS_KEYS.FIBONACCI + i, fibonacci(i).toString());
+        }
+
+        // Precompute first 100 primes
+        const primes = await computeInitialPrimes(100);
+        for (let i = 1; i <= 100; i++) {
+            if (primes[i - 1]) {
+                await cacheValue(REDIS_KEYS.PRIME + i, primes[i - 1]!.toString());
+            }
+        }
+
+        // Precompute factorials up to 20
+        for (let i = 1; i <= 20; i++) {
+            await cacheValue(REDIS_KEYS.FACTORIAL + i, factorial(i).toString());
+        }
+
+        // Precompute Pi to various digits
+        for (let digits of [10, 20, 50]) {
+            await cacheValue(REDIS_KEYS.PI + digits, computePi(digits));
+        }
+
+        console.log('✅ Precomputed common values cached in Redis');
+    } catch (err) {
+        console.error('⚠️ Error precomputing values:', err);
+    }
+}
+
+// Helper to retrieve cached value from Redis or fallback cache
+async function getCachedValue(key: string, fallbackCache?: Map<number, string>): Promise<string | null> {
+    try {
+        if (redisClient.isOpen) {
+            const value = await redisClient.get(key);
+            return value;
+        }
+    } catch (error) {
+        console.error(`Redis error when getting ${key}:`, error);
+    }
+
+    // Fallback to in-memory cache if Redis fails
+    if (fallbackCache) {
+        const numericKey = parseInt(key.split(':')[1]!);
+        return fallbackCache.get(numericKey) || null;
+    }
+
+    return null;
+}
+
+// Helper to cache value in Redis and fallback cache
+async function cacheValue(key: string, value: string, fallbackCache?: Map<number, any>, ttl = DEFAULT_TTL): Promise<void> {
+    try {
+        if (redisClient.isOpen) {
+            await redisClient.set(key, value, { EX: ttl });
+        }
+    } catch (error) {
+        console.error(`Redis error when setting ${key}:`, error);
+    }
+
+    // Always update local cache as fallback
+    if (fallbackCache) {
+        const numericKey = parseInt(key.split(':')[1]!);
+        fallbackCache.set(numericKey, value);
+    }
+}
+
+// Improved iterative Fibonacci implementation with Redis caching
+async function fibonacciWithCache(n: number): Promise<string> {
+    if (n <= 0) return '0';
+    if (n === 1) return '1';
+
+    const cacheKey = REDIS_KEYS.FIBONACCI + n;
+    const cachedValue = await getCachedValue(cacheKey, fibCache);
+
+    if (cachedValue !== null) {
+        return cachedValue;
+    }
+
+    // Use BigInt for larger numbers to avoid precision issues
+    let a = BigInt(0);
+    let b = BigInt(1);
+
     for (let i = 2; i <= n; i++) {
         const temp = a + b;
         a = b;
         b = temp;
 
         // Cache intermediate results periodically
-        if (i % 10 === 0) {
-            fibCache.set(i, b);
+        if (i % 10 === 0 || i === n) {
+            await cacheValue(REDIS_KEYS.FIBONACCI + i, b.toString(), fibCache);
         }
     }
 
-    fibCache.set(n, b);
+    return b.toString();
+}
+
+// Synchronous Fibonacci for initial loading
+function fibonacci(n: number): bigint {
+    if (n <= 0) return BigInt(0);
+    if (n === 1) return BigInt(1);
+
+    let a = BigInt(0);
+    let b = BigInt(1);
+
+    for (let i = 2; i <= n; i++) {
+        const temp = a + b;
+        a = b;
+        b = temp;
+    }
+
     return b;
 }
 
-// Prime number calculation using Sieve of Eratosthenes for efficiency
-const MAX_PRIME_CACHE = 10000;
-const primeSieve = new Array<boolean>(MAX_PRIME_CACHE).fill(true);
-const primesList: number[] = [];
+// Prime number calculations with Redis caching
+async function computeInitialPrimes(maxN: number): Promise<number[]> {
+    const primes: number[] = [];
+    const sieve = new Array<boolean>(maxN * 20).fill(true);
+    sieve[0] = sieve[1] = false;
 
-// Initialize the prime sieve on startup
-function initPrimeSieve() {
-    primeSieve[0] = primeSieve[1] = false;
+    for (let i = 2; primes.length < maxN && i < sieve.length; i++) {
+        if (sieve[i]) {
+            primes.push(i);
 
-    for (let i = 2; i * i < MAX_PRIME_CACHE; i++) {
-        if (primeSieve[i]) {
-            for (let j = i * i; j < MAX_PRIME_CACHE; j += i) {
-                primeSieve[j] = false;
+            // Mark all multiples as non-prime
+            for (let j = i * i; j < sieve.length; j += i) {
+                sieve[j] = false;
             }
         }
     }
 
-    // Fill the primes list
-    for (let i = 2; i < MAX_PRIME_CACHE; i++) {
-        if (primeSieve[i]) primesList.push(i);
-    }
-
-    // Cache the nth prime positions
-    for (let i = 0; i < primesList.length; i++) {
-        primeCache.set(i + 1, primesList[i]!);
-    }
+    return primes;
 }
 
-// Initialize prime sieve immediately
-initPrimeSieve();
+async function nthPrimeWithCache(n: number): Promise<string> {
+    if (n <= 0) return '0';
 
-function nthPrime(n: number): number {
-    // Return from cache if available
-    if (primeCache.has(n)) return primeCache.get(n)!;
+    const cacheKey = REDIS_KEYS.PRIME + n;
+    const cachedValue = await getCachedValue(cacheKey, primeCache);
 
-    // If n is beyond our sieve, use a more efficient approach
-    if (n > primesList.length) {
-        let count = primesList.length;
-        let num = primesList[primesList.length - 1]!;
-
-        while (count < n) {
-            num += 2; // Check only odd numbers
-            let isPrime = true;
-
-            // Check divisibility by primes up to sqrt(num)
-            for (const prime of primesList) {
-                if (prime * prime > num) break;
-                if (num % prime === 0) {
-                    isPrime = false;
-                    break;
-                }
-            }
-
-            if (isPrime) {
-                count++;
-                if (count === n) {
-                    primeCache.set(n, num);
-                    return num;
-                }
-            }
-        }
+    if (cachedValue !== null) {
+        return cachedValue;
     }
 
-    return -1; // Should not happen if sieve is large enough
+    // Compute using sieve for efficiency
+    const primes = await computeInitialPrimes(Math.max(n, 100));
+
+    if (n <= primes.length) {
+        const result = primes[n - 1]!.toString();
+        await cacheValue(cacheKey, result, primeCache);
+        return result;
+    }
+
+    // For very large n, use a different approach
+    // This is a fallback but should rarely be needed
+    return '0'; // Should be replaced with actual computation
 }
 
-// Improved iterative factorial with caching
-function factorial(n: number): number {
-    if (n <= 1) return 1;
-    if (factorialCache.has(n)) return factorialCache.get(n)!;
+// Factorial with Redis caching
+async function factorialWithCache(n: number): Promise<string> {
+    if (n <= 1) return '1';
 
-    // Use previous cached value if available
-    let result = 1;
+    const cacheKey = REDIS_KEYS.FACTORIAL + n;
+    const cachedValue = await getCachedValue(cacheKey, factorialCache);
+
+    if (cachedValue !== null) {
+        return cachedValue;
+    }
+
+    // Find largest cached factorial less than n
+    let result = BigInt(1);
     let start = 1;
 
-    // Find the largest cached factorial less than n
     for (let i = n - 1; i >= 1; i--) {
-        if (factorialCache.has(i)) {
-            result = factorialCache.get(i)!;
+        const prevCacheKey = REDIS_KEYS.FACTORIAL + i;
+        const prevCached = await getCachedValue(prevCacheKey);
+
+        if (prevCached !== null) {
+            result = BigInt(prevCached);
             start = i + 1;
             break;
         }
     }
 
+    // Calculate remaining part
     for (let i = start; i <= n; i++) {
-        result *= i;
-        // Cache periodically
+        result *= BigInt(i);
+
+        // Cache intermediate results
         if (i % 5 === 0 || i === n) {
-            factorialCache.set(i, result);
+            await cacheValue(REDIS_KEYS.FACTORIAL + i, result.toString(), factorialCache);
         }
+    }
+
+    return result.toString();
+}
+
+// Synchronous factorial for initial loading
+function factorial(n: number): bigint {
+    if (n <= 1) return BigInt(1);
+
+    let result = BigInt(1);
+    for (let i = 2; i <= n; i++) {
+        result *= BigInt(i);
     }
 
     return result;
 }
 
-// More efficient Pi calculation
-function computePi(digits: number): string {
-    if (piCache.has(digits)) return piCache.get(digits)!;
+// Pi calculation with Redis caching
+async function piWithCache(digits: number): Promise<string> {
+    const cacheKey = REDIS_KEYS.PI + digits;
+    const cachedValue = await getCachedValue(cacheKey, piCache);
 
-    // Better approximation using Machin-like formula
-    // Much faster convergence than Leibniz
-    const iterations = Math.min(10000, digits * 8);
+    if (cachedValue !== null) {
+        return cachedValue;
+    }
+
+    // Compute pi using a faster algorithm
+    const result = computePi(digits);
+    await cacheValue(cacheKey, result, piCache);
+
+    return result;
+}
+
+// More efficient Pi calculation (Chudnovsky algorithm approximation)
+function computePi(digits: number): string {
+    // For simplicity, we use a modified Machin-like formula
+    // In production, consider a more sophisticated implementation like Chudnovsky
+    const iterations = Math.min(10000, digits * 10);
     let pi = 4 * (4 * arctangent(1 / 5, iterations) - arctangent(1 / 239, iterations));
 
-    const result = pi.toFixed(digits);
-    piCache.set(digits, result);
-    return result;
+    return pi.toFixed(digits);
 }
 
 // Helper for Pi calculation
@@ -192,7 +337,7 @@ function arctangent(x: number, iterations: number): number {
     return sum;
 }
 
-// Generate random bytes with enforced size limit
+// Generate random bytes
 function generateRandomBytes(size: number): string {
     // Limit size to prevent excessive memory usage
     const actualSize = Math.min(size, 5000);
@@ -201,7 +346,7 @@ function generateRandomBytes(size: number): string {
     return Buffer.from(buffer).toString('hex');
 }
 
-// Generate and sort random array with a size limit
+// Generate and sort random array
 function generateAndSortArray(size: number): number[] {
     // Limit size to prevent excessive memory usage
     const actualSize = Math.min(size, 5000);
@@ -237,60 +382,99 @@ setInterval(() => {
     }
 }, 60000);
 
+// Health endpoint for container health checks
+async function healthCheck(): Promise<object> {
+    let redisStatus = 'disconnected';
+
+    try {
+        if (redisClient.isOpen) {
+            const pingResult = await redisClient.ping();
+            redisStatus = pingResult === 'PONG' ? 'connected' : 'error';
+        }
+    } catch (err) {
+        redisStatus = 'error';
+    }
+
+    return {
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        redis: redisStatus,
+        uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+    };
+}
+
+// Initialize Redis on startup
+initRedis();
+
 const server = serve({
     port: 3000,
     async fetch(req: Request): Promise<Response> {
         const url = new URL(req.url);
         const ip = req.headers.get('x-forwarded-for') || 'unknown';
 
+        // Health check endpoint
+        if (url.pathname === '/health') {
+            return successResponse(await healthCheck());
+        }
+
         // Apply rate limiting
         if (!checkRateLimit(ip)) {
             return errorResponse('Rate limit exceeded', 429);
         }
 
-        if (url.pathname.startsWith('/fibonacci/')) {
-            const n = Number(url.pathname.split('/fibonacci/')[1]);
-            if (isNaN(n) || n < 0 || n > 1000) return errorResponse('Invalid Fibonacci input (max 1000)');
+        try {
+            if (url.pathname.startsWith('/fibonacci/')) {
+                const n = Number(url.pathname.split('/fibonacci/')[1]);
+                if (isNaN(n) || n < 0 || n > 1000) return errorResponse('Invalid Fibonacci input (max 1000)');
 
-            return successResponse({ n, fibonacci: fibonacci(n) } as FibonacciResponse);
+                const result = await fibonacciWithCache(n);
+                return successResponse({ n, fibonacci: result } as unknown as FibonacciResponse);
+            }
+
+            if (url.pathname.startsWith('/prime/')) {
+                const n = Number(url.pathname.split('/prime/')[1]);
+                if (isNaN(n) || n <= 0 || n > 10000) return errorResponse('Invalid prime input (max 10000)');
+
+                const result = await nthPrimeWithCache(n);
+                return successResponse({ n, prime: result } as unknown as PrimeResponse);
+            }
+
+            if (url.pathname.startsWith('/factorial/')) {
+                const n = Number(url.pathname.split('/factorial/')[1]);
+                if (isNaN(n) || n < 0 || n > 170) return errorResponse('Invalid factorial input (max 170)');
+
+                const result = await factorialWithCache(n);
+                return successResponse({ n, factorial: result } as unknown as FactorialResponse);
+            }
+
+            if (url.pathname.startsWith('/pi/')) {
+                const digits = Number(url.pathname.split('/pi/')[1]);
+                if (isNaN(digits) || digits < 1 || digits > 50) return errorResponse('Invalid Pi digit input (max 50)');
+
+                const result = await piWithCache(digits);
+                return successResponse({ digits, pi: result } as PiResponse);
+            }
+
+            if (url.pathname.startsWith('/random-bytes/')) {
+                const size = Number(url.pathname.split('/random-bytes/')[1]);
+                if (isNaN(size) || size < 1 || size > 5000) return errorResponse('Invalid byte size (max 5000)');
+
+                return successResponse({ size, data: generateRandomBytes(size) } as RandomBytesResponse);
+            }
+
+            if (url.pathname.startsWith('/sort/')) {
+                const size = Number(url.pathname.split('/sort/')[1]);
+                if (isNaN(size) || size < 1 || size > 5000) return errorResponse('Invalid sort size (max 5000)');
+
+                return successResponse({ size, sorted: generateAndSortArray(size) } as SortResponse);
+            }
+
+            return errorResponse('Not found', 404);
+        } catch (error) {
+            console.error('Error processing request:', error);
+            return errorResponse('Internal server error: ' + (error instanceof Error ? error.message : 'Unknown error'), 500);
         }
-
-        if (url.pathname.startsWith('/prime/')) {
-            const n = Number(url.pathname.split('/prime/')[1]);
-            if (isNaN(n) || n <= 0 || n > 10000) return errorResponse('Invalid prime input (max 10000)');
-
-            return successResponse({ n, prime: nthPrime(n) } as PrimeResponse);
-        }
-
-        if (url.pathname.startsWith('/factorial/')) {
-            const n = Number(url.pathname.split('/factorial/')[1]);
-            if (isNaN(n) || n < 0 || n > 170) return errorResponse('Invalid factorial input (max 170)');
-
-            return successResponse({ n, factorial: factorial(n) } as FactorialResponse);
-        }
-
-        if (url.pathname.startsWith('/pi/')) {
-            const digits = Number(url.pathname.split('/pi/')[1]);
-            if (isNaN(digits) || digits < 1 || digits > 50) return errorResponse('Invalid Pi digit input (max 50)');
-
-            return successResponse({ digits, pi: computePi(digits) } as PiResponse);
-        }
-
-        if (url.pathname.startsWith('/random-bytes/')) {
-            const size = Number(url.pathname.split('/random-bytes/')[1]);
-            if (isNaN(size) || size < 1 || size > 5000) return errorResponse('Invalid byte size (max 5000)');
-
-            return successResponse({ size, data: generateRandomBytes(size) } as RandomBytesResponse);
-        }
-
-        if (url.pathname.startsWith('/sort/')) {
-            const size = Number(url.pathname.split('/sort/')[1]);
-            if (isNaN(size) || size < 1 || size > 5000) return errorResponse('Invalid sort size (max 5000)');
-
-            return successResponse({ size, sorted: generateAndSortArray(size) } as SortResponse);
-        }
-
-        return errorResponse('Not found', 404);
     },
 });
 
