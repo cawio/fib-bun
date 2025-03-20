@@ -41,11 +41,6 @@ const primeCache = new Map<number, string>();
 const factorialCache = new Map<number, string>();
 const piCache = new Map<number, string>();
 
-// Rate limiting using local memory (could be moved to Redis in production)
-const rateLimits = new Map<string, { count: number; timestamp: number }>();
-const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const RATE_LIMIT_MAX = 200; // Max 200 requests per minute per IP
-
 // Redis client
 // REPLACE WITH YOUR ACTUAL REDIS CONNECTION DETAILS
 const redisConnectionString = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -356,34 +351,6 @@ function generateAndSortArray(size: number): number[] {
     return arr.sort((a, b) => a - b);
 }
 
-// Rate limiting function
-function checkRateLimit(ip: string): boolean {
-    const now = Date.now();
-    const record = rateLimits.get(ip) || { count: 0, timestamp: now };
-
-    // Reset if outside window
-    if (now - record.timestamp > RATE_LIMIT_WINDOW) {
-        rateLimits.set(ip, { count: 1, timestamp: now });
-        return true;
-    }
-
-    // Increment and check
-    record.count++;
-    rateLimits.set(ip, record);
-
-    return record.count <= RATE_LIMIT_MAX;
-}
-
-// Clean up rate limiting data periodically
-setInterval(() => {
-    const now = Date.now();
-    for (const [ip, data] of rateLimits.entries()) {
-        if (now - data.timestamp > RATE_LIMIT_WINDOW) {
-            rateLimits.delete(ip);
-        }
-    }
-}, 60000);
-
 // Health endpoint for container health checks
 async function healthCheck(): Promise<object> {
     let redisStatus = 'disconnected';
@@ -418,11 +385,6 @@ const server = serve({
         // Health check endpoint
         if (url.pathname === '/health') {
             return successResponse(await healthCheck());
-        }
-
-        // Apply rate limiting
-        if (!checkRateLimit(ip)) {
-            return errorResponse('Rate limit exceeded', 429);
         }
 
         try {
