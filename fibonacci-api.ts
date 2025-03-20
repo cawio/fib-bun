@@ -48,8 +48,10 @@ const RATE_LIMIT_MAX = 200; // Max 200 requests per minute per IP
 
 // Redis client
 // REPLACE WITH YOUR ACTUAL REDIS CONNECTION DETAILS
+const redisConnectionString = process.env.REDIS_URL || 'redis://localhost:6379';
+console.log(`Connecting to Redis at ${redisConnectionString}`);
 const redisClient = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    url: redisConnectionString,
     socket: {
         connectTimeout: 5000,
         reconnectStrategy: (retries) => Math.min(retries * 50, 1000),
