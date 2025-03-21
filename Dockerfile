@@ -32,8 +32,6 @@ EXPOSE 8080
 # Set environment variables
 ENV ASPNETCORE_URLS=http://+:8080
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
-ENV Telemetry__OtlpGrpcEndpoint=http://+:18889
-ENV Telemetry__OtlpHttpEndpoint=http://+:18890
 
 # Command to run the application
 ENTRYPOINT ["dotnet", "FibBun.Api.dll"]
