@@ -73,7 +73,7 @@ public class ComputationService(ILogger<ComputationService> logger, ICacheServic
         return b;
     }
 
-    public async Task<List<int>> ComputeInitialPrimesAsync(int maxN)
+    public Task<List<int>> ComputeInitialPrimesAsync(int maxN)
     {
         var primes = new List<int>();
         var sieve = new bool[maxN * 20];
@@ -99,7 +99,7 @@ public class ComputationService(ILogger<ComputationService> logger, ICacheServic
             }
         }
 
-        return primes;
+        return Task.FromResult(primes);
     }
 
     public async Task<string> GetNthPrimeAsync(int n)

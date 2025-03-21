@@ -11,6 +11,9 @@ builder.Services.AddOutputCache();
 // Register application services
 builder.Services.RegisterApplicationServices(builder.Configuration);
 
+// Register OpenTelemetry
+builder.Services.AddTelemetry(builder.Configuration);
+
 var app = builder.Build();
 
 // Configure middleware
