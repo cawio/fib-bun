@@ -17,8 +17,6 @@ public static class TelemetryExtensions
         var serviceVersion = "1.0.0";
 
         // Read OTLP exporter configuration
-        var otlpGrpcEndpoint =
-            configuration["Telemetry:OtlpGrpcEndpoint"] ?? "http://localhost:18889";
         var otlpHttpEndpoint =
             configuration["Telemetry:OtlpHttpEndpoint"] ?? "http://localhost:18890";
 
@@ -56,8 +54,11 @@ public static class TelemetryExtensions
                     .AddConsoleExporter()
                     .AddOtlpExporter(otlpOptions =>
                     {
-                        otlpOptions.Endpoint = new Uri(otlpGrpcEndpoint);
-                        otlpOptions.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.Grpc;
+                        otlpOptions.Endpoint = new Uri(otlpHttpEndpoint);
+                        otlpOptions.Protocol = OpenTelemetry
+                            .Exporter
+                            .OtlpExportProtocol
+                            .HttpProtobuf;
                     })
             )
             .WithMetrics(metrics =>
