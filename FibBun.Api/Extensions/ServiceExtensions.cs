@@ -13,7 +13,7 @@ public static class ServiceExtensions
     {
         // Redis configuration
         var redisConnectionString =
-            configuration.GetValue<string>("Redis:ConnectionString") ?? "localhost:6379";
+            Environment.GetEnvironmentVariable("REDIS_URL") ?? "localhost:6379";
         services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<Program>>();
