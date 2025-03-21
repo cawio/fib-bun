@@ -1,34 +1,32 @@
-# dependencies (bun install)
-node_modules
+# Created by https://www.toptal.com/developers/gitignore/api/dotnetcore,visualstudiocode
+# Edit at https://www.toptal.com/developers/gitignore?templates=dotnetcore,visualstudiocode
 
-# output
-out
-dist
-*.tgz
+### DotnetCore ###
+# .NET Core build folders
+bin/
+obj/
 
-# code coverage
-coverage
-*.lcov
+# Common node modules locations
+/node_modules
+/wwwroot/node_modules
 
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+### VisualStudioCode ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
 
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+# Local History for Visual Studio Code
+.history/
 
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
+# Built Visual Studio Code Extensions
+*.vsix
 
-# IntelliJ based IDEs
-.idea
+### VisualStudioCode Patch ###
+# Ignore all local history of files
+.history
+.ionide
 
-# Finder (MacOS) folder config
-.DS_Store
+# End of https://www.toptal.com/developers/gitignore/api/dotnetcore,visualstudiocode

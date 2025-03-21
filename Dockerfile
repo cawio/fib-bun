@@ -1,31 +1,37 @@
-FROM oven/bun:latest AS builder
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
 
+# Copy solution and project files first for better layer caching
+COPY ["FibBun.sln", "./"]
+COPY ["FibBun.Api/FibBun.Api.csproj", "FibBun.Api/"]
+
+# Restore dependencies
+RUN dotnet restore "FibBun.Api/FibBun.Api.csproj"
+
+# Copy all source files
+COPY . .
+
+# Build and publish
+WORKDIR "/src/FibBun.Api"
+# Run restore again within the project directory just to be safe
+RUN dotnet restore
+# Publish without the --no-restore flag to ensure dependencies are available
+RUN dotnet publish "FibBun.Api.csproj" -c Release -o /app/publish
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
-# Copy package.json first for better layer caching
-COPY package.json .
+# Copy published app from build stage
+COPY --from=build /app/publish .
 
-COPY bun.lockb* .
+# Expose port
+EXPOSE 8080
 
-# Install dependencies (if any)
-RUN bun install --production
-
-# Copy the TypeScript file
-COPY fibonacci-api.ts .
-
-# Build the application
-RUN bun build --compile --target=bun --outfile=fibonacci-api ./fibonacci-api.ts
-
-# Runtime stage - use a smaller image
-FROM oven/bun:slim
-
-WORKDIR /app
-
-# Copy the compiled application from the builder stage
-COPY --from=builder /app/fibonacci-api /app/fibonacci-api
-
-# Expose the port the app runs on
-EXPOSE 3000
+# Set environment variables
+ENV ASPNETCORE_URLS=http://+:8080
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
 
 # Command to run the application
-CMD ["./fibonacci-api"]
+ENTRYPOINT ["dotnet", "FibBun.Api.dll"]
